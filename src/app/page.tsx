@@ -1,65 +1,386 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import { CITY_LONGITUDES } from "@/lib/cities";
+import ChartPanel, { type ChartData } from "./components/ChartPanel";
+
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+  reasoning?: string;
+}
+
+interface BirthForm {
+  date: string;
+  time: string;
+  gender: string;
+  city: string;
+}
+
+const SUGGESTIONS = [
+  "请师傅看看我今年的运势如何",
+  "我近来想换工作，此事可成否？",
+  "请道长传授一段静心养气的口诀",
+  "我今年桃花运怎么样？",
+  "我什么时候会遇到正缘",
+];
+
+const BIRTH_STORAGE_KEY = "xuanwei-birth";
+
+const EMPTY_BIRTH: BirthForm = { date: "", time: "", gender: "", city: "" };
+
+/** 道长回复的 Markdown 渲染样式 */
+const markdownComponents = {
+  p: ({ children }: { children?: React.ReactNode }) => (
+    <p className="mb-3 last:mb-0">{children}</p>
+  ),
+  strong: ({ children }: { children?: React.ReactNode }) => (
+    <strong className="font-semibold text-stone-900">{children}</strong>
+  ),
+  h1: ({ children }: { children?: React.ReactNode }) => (
+    <h1 className="mt-4 mb-2 text-base font-semibold first:mt-0">{children}</h1>
+  ),
+  h2: ({ children }: { children?: React.ReactNode }) => (
+    <h2 className="mt-4 mb-2 text-base font-semibold first:mt-0">{children}</h2>
+  ),
+  h3: ({ children }: { children?: React.ReactNode }) => (
+    <h3 className="mt-3 mb-1.5 text-sm font-semibold first:mt-0">{children}</h3>
+  ),
+  ul: ({ children }: { children?: React.ReactNode }) => (
+    <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>
+  ),
+  ol: ({ children }: { children?: React.ReactNode }) => (
+    <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>
+  ),
+  blockquote: ({ children }: { children?: React.ReactNode }) => (
+    <blockquote className="mb-3 border-l-2 border-teal-700/40 pl-3 text-stone-500 last:mb-0">
+      {children}
+    </blockquote>
+  ),
+  code: ({ children }: { children?: React.ReactNode }) => (
+    <code className="rounded bg-stone-100 px-1 py-0.5 text-[0.85em] text-teal-800">
+      {children}
+    </code>
+  ),
+  a: ({ children, href }: { children?: React.ReactNode; href?: string }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-teal-700 underline"
+    >
+      {children}
+    </a>
+  ),
+};
 
 export default function Home() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showBirth, setShowBirth] = useState(false);
+  const [birth, setBirth] = useState<BirthForm>(EMPTY_BIRTH);
+  const [chart, setChart] = useState<ChartData | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  // 生辰信息暂存本地：挂载时读取（localStorage 仅客户端可用，必须在 effect 中回填），变更时写入
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(BIRTH_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as Partial<BirthForm>;
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setBirth({ ...EMPTY_BIRTH, ...parsed });
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setShowBirth(true);
+      }
+    } catch {
+      // 本地数据损坏则忽略
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (birth.date || birth.time || birth.gender || birth.city) {
+        localStorage.setItem(BIRTH_STORAGE_KEY, JSON.stringify(birth));
+      } else {
+        localStorage.removeItem(BIRTH_STORAGE_KEY);
+      }
+    } catch {
+      // 隐私模式等场景下静默失败
+    }
+  }, [birth]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  async function ask(question: string) {
+    const q = question.trim();
+    if (!q || loading) return;
+    setError(null);
+    setInput("");
+
+    const next: Message[] = [...messages, { role: "user", content: q }];
+    setMessages(next);
+    setLoading(true);
+
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: next,
+          birth: birth.date
+            ? {
+                date: birth.date,
+                time: birth.time || undefined,
+                gender: birth.gender || undefined,
+                city: birth.city || undefined,
+              }
+            : null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "请示未成，请稍后再试。");
+        return;
+      }
+      setMessages([
+        ...next,
+        { role: "assistant", content: data.reply, reasoning: data.reasoning },
+      ]);
+      if (data.chart) setChart(data.chart);
+    } catch {
+      setError("山路不通（网络异常），请稍后再试。");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const birthSummary = birth.date
+    ? `${birth.date}${birth.time ? ` ${birth.time}` : "（时辰未填）"}${birth.city ? ` · ${birth.city}` : ""}${birth.gender ? ` · ${birth.gender}` : ""}`
+    : "";
+
+  const fieldClass =
+    "rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-800 outline-none transition-colors focus:border-teal-600 focus:ring-2 focus:ring-teal-600/15";
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="flex flex-col flex-1 min-h-screen">
+      {/* 顶栏 */}
+      <header className="sticky top-0 z-10 border-b border-stone-200/80 bg-[#f7f6f3]/80 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-teal-800 text-lg text-white shadow-sm">
+              ☯
+            </div>
+            <div>
+              <h1 className="text-base font-semibold tracking-wide text-stone-900">
+                宇玄问道
+              </h1>
+              <p className="text-xs text-stone-400">
+                八字 · 梅花易数 · 小六壬，综合参断
+              </p>
+            </div>
+          </div>
+          <span className="hidden rounded-full border border-stone-200 bg-white px-3 py-1 text-xs text-stone-500 sm:inline">
+            道长在席
+          </span>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      </header>
+
+      {/* 消息区 + 右侧盘面 */}
+      <main className="flex-1 overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-6xl gap-8 px-4 py-8">
+          <div className="flex min-w-0 flex-1 flex-col gap-5">
+            {messages.length === 0 && (
+              <div className="mt-10 flex flex-col items-center gap-7 text-center">
+                <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-teal-800 text-3xl text-white shadow-md">
+                  ☯
+                </div>
+                <div>
+                  <p className="text-lg font-medium text-stone-800">
+                    善信远道而来，所为何事？
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-stone-500">
+                    无论问事、问命，还是求口诀、问修身之法，但说无妨。
+                  </p>
+                </div>
+                <div className="flex w-full max-w-md flex-col gap-2.5">
+                  {SUGGESTIONS.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => ask(s)}
+                      className="rounded-xl border border-stone-200 bg-white px-4 py-2.5 text-sm text-stone-600 shadow-sm transition-all hover:-translate-y-px hover:border-teal-700/40 hover:text-teal-800 hover:shadow"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {messages.map((m, i) =>
+              m.role === "user" ? (
+                <div key={i} className="flex justify-end">
+                  <div className="max-w-[80%] rounded-2xl rounded-br-md bg-teal-800 px-4 py-3 text-sm leading-7 text-white shadow-sm">
+                    {m.content}
+                  </div>
+                </div>
+              ) : (
+                <div key={i} className="flex items-start gap-3">
+                  <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-teal-800/10 text-sm text-teal-800">
+                    ☯
+                  </div>
+                  <div className="max-w-[85%] rounded-2xl rounded-tl-md border border-stone-200/80 bg-white px-5 py-4 text-sm leading-7 text-stone-800 shadow-sm">
+                    {m.reasoning && (
+                      <details className="mb-3 rounded-lg bg-stone-50 px-3 py-2 text-xs text-stone-500">
+                        <summary className="cursor-pointer select-none font-medium text-stone-400 transition-colors hover:text-teal-700">
+                          道长掐算心路（思考过程）
+                        </summary>
+                        <div className="mt-2 whitespace-pre-wrap leading-6">
+                          {m.reasoning}
+                        </div>
+                      </details>
+                    )}
+                    <ReactMarkdown components={markdownComponents}>
+                      {m.content}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              ),
+            )}
+
+            {loading && (
+              <div className="flex items-start gap-3">
+                <div className="mt-1 flex h-8 w-8 shrink-0 animate-pulse items-center justify-center rounded-full bg-teal-800/10 text-sm text-teal-800">
+                  ☯
+                </div>
+                <div className="rounded-2xl rounded-tl-md border border-stone-200/80 bg-white px-5 py-4 text-sm text-stone-400 shadow-sm">
+                  道长掐指推算中…
+                </div>
+              </div>
+            )}
+
+            {error && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                {error}
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+
+          {/* 右侧盘面侧栏 */}
+          <aside className="hidden w-72 shrink-0 lg:block xl:w-80">
+            <div className="sticky top-20">
+              <ChartPanel chart={chart} />
+            </div>
+          </aside>
         </div>
       </main>
+
+      {/* 输入区 */}
+      <footer className="sticky bottom-0 border-t border-stone-200/80 bg-[#f7f6f3]/80 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-6xl gap-8 px-4 py-4">
+          <div className="min-w-0 flex-1">
+            {/* 生辰面板 */}
+            <div className="mb-2 flex items-center gap-2">
+              <button
+                onClick={() => setShowBirth(!showBirth)}
+                className="flex items-center gap-1.5 text-xs text-stone-400 transition-colors hover:text-teal-700"
+              >
+                <span
+                  className={`inline-block transition-transform ${showBirth ? "rotate-90" : ""}`}
+                >
+                  ▸
+                </span>
+                提供生辰（问八字填此，公历，按出生地换算真太阳时）
+              </button>
+              {birthSummary && (
+                <span className="rounded-full bg-teal-800/8 px-2.5 py-0.5 text-xs text-teal-800">
+                  {birthSummary}
+                </span>
+              )}
+            </div>
+            {showBirth && (
+              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-stone-200 bg-white p-3 shadow-sm">
+                <input
+                  type="date"
+                  value={birth.date}
+                  onChange={(e) => setBirth({ ...birth, date: e.target.value })}
+                  className={fieldClass}
+                />
+                <input
+                  type="time"
+                  value={birth.time}
+                  onChange={(e) => setBirth({ ...birth, time: e.target.value })}
+                  className={fieldClass}
+                />
+                <input
+                  type="text"
+                  list="birth-cities"
+                  value={birth.city}
+                  onChange={(e) => setBirth({ ...birth, city: e.target.value })}
+                  placeholder="出生城市（真太阳时）"
+                  className={`${fieldClass} w-44`}
+                />
+                <datalist id="birth-cities">
+                  {Object.keys(CITY_LONGITUDES).map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
+                <select
+                  value={birth.gender}
+                  onChange={(e) =>
+                    setBirth({ ...birth, gender: e.target.value })
+                  }
+                  className={fieldClass}
+                >
+                  <option value="">性别</option>
+                  <option value="男">男</option>
+                  <option value="女">女</option>
+                </select>
+                <button
+                  onClick={() => setBirth(EMPTY_BIRTH)}
+                  className="text-xs text-stone-400 transition-colors hover:text-red-500"
+                >
+                  清除
+                </button>
+              </div>
+            )}
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                ask(input);
+              }}
+              className="flex items-center gap-2 rounded-2xl border border-stone-200 bg-white p-2 shadow-sm transition-shadow focus-within:border-teal-700/50 focus-within:shadow"
+            >
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="写下你想问的事…"
+                disabled={loading}
+                className="flex-1 bg-transparent px-3 py-2 text-sm text-stone-800 placeholder-stone-300 outline-none disabled:opacity-50"
+              />
+              <button
+                type="submit"
+                disabled={loading || !input.trim()}
+                className="rounded-xl bg-teal-800 px-5 py-2.5 text-sm font-medium text-white shadow-sm transition-all hover:bg-teal-700 disabled:opacity-40 disabled:hover:bg-teal-800"
+              >
+                问
+              </button>
+            </form>
+            <p className="mt-2.5 text-center text-xs text-stone-300">
+              命由己造，相由心生。所断所测，聊作参考，行善积德方为根本。
+            </p>
+          </div>
+          {/* 与右侧盘面同宽的占位，保持输入区与聊天列对齐 */}
+          <div className="hidden w-72 shrink-0 lg:block xl:w-80" />
+        </div>
+      </footer>
     </div>
   );
 }
