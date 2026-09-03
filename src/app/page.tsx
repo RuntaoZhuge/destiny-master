@@ -22,7 +22,7 @@ const SUGGESTIONS = [
   "请师傅看看我今年的运势如何",
   "我近来想换工作，此事可成否？",
   "请道长传授一段静心养气的口诀",
-  "我今年桃花运怎么样？",
+  "给我接下来一周的穿搭颜色和佩戴",
   "我什么时候会遇到正缘",
 ];
 
@@ -143,16 +143,68 @@ export default function Home() {
             : null,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) {
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
         setError(data.error ?? "请示未成，请稍后再试。");
         return;
       }
-      setMessages([
-        ...next,
-        { role: "assistant", content: data.reply, reasoning: data.reasoning },
-      ]);
-      if (data.chart) setChart(data.chart);
+
+      // 流式回复：先插入空气泡，随模型输出逐段填充，避免长时间无反馈
+      setMessages([...next, { role: "assistant", content: "" }]);
+      setLoading(false);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let event = "";
+      let received = "";
+
+      const applyDelta = (payload: {
+        content?: string;
+        reasoning?: string;
+      }) => {
+        if (payload.content) received += payload.content;
+        setMessages((prev) => {
+          const copy = [...prev];
+          const last = { ...copy[copy.length - 1] };
+          if (payload.content) last.content += payload.content;
+          if (payload.reasoning)
+            last.reasoning = (last.reasoning ?? "") + payload.reasoning;
+          copy[copy.length - 1] = last;
+          return copy;
+        });
+      };
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("event:")) {
+            event = trimmed.slice(6).trim();
+          } else if (trimmed.startsWith("data:")) {
+            let payload: Record<string, string | undefined>;
+            try {
+              payload = JSON.parse(trimmed.slice(5).trim());
+            } catch {
+              continue;
+            }
+            if (event === "chart") setChart(payload as unknown as ChartData);
+            else if (event === "delta") applyDelta(payload);
+            else if (event === "error" && payload.error)
+              setError(payload.error);
+          }
+        }
+      }
+
+      if (!received) {
+        // 流结束但无内容：移除空气泡并提示
+        setMessages((prev) => prev.slice(0, -1));
+        setError((prev) => prev ?? "模型未返回内容，请稍后再试。");
+      }
     } catch {
       setError("山路不通（网络异常），请稍后再试。");
     } finally {

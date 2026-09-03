@@ -36,6 +36,15 @@ npm run dev
 
 配置 `TAVILY_API_KEY`（[Tavily](https://tavily.com)）后，问题中含「最近、行情、行业、政策」等时势关键词时，服务端会先搜索当下资讯，以【时事资料】注入提示词，道长断事时可引时事佐证（术数为主、时事为参）。未配置则自动跳过，不影响正常使用。搜索触发逻辑在 `src/lib/search.ts`。
 
+### 问答记录（复盘优化用）
+
+配置 Supabase 免费层后，每次问答（问题、断语、思考链、生辰、模型、耗时）会写入数据库，供事后复盘、调优提示词。未配置则自动跳过，不影响正常使用。
+
+1. 建表：`supabase/migrations/20260903000000_create_readings.sql` 即建表脚本（含 RLS：不开任何 policy，anon key 不可读写），随部署自动执行。
+2. 环境变量：Supabase 已与 Vercel 集成时，`SUPABASE_URL` 和 `SUPABASE_SERVICE_ROLE_KEY` 会自动注入 Vercel 项目；本地开发用 `vercel env pull` 拉取，或手动填入 `.env.local`。service_role key 仅服务端可见，勿暴露给前端。
+
+写入逻辑在 `src/lib/log.ts`（纯 fetch 调 PostgREST，无额外依赖），通过 Next 的 `after()` 在响应结束后落库，不拖慢回答。
+
 ## 结构
 
 ```
@@ -47,6 +56,7 @@ src/
     ├── divination.ts       # 八字（真太阳时）/ 梅花 / 小六壬 确定性排盘
     ├── cities.ts           # 城市经度表（真太阳时换算用）
     ├── search.ts           # Tavily 联网搜索与时势关键词判断
+    ├── log.ts              # 问答记录写入 Supabase（可选，未配置自动跳过）
     └── prompt.ts           # 道长人设 + 方法论系统提示词
 ```
 
@@ -63,3 +73,5 @@ src/
 
 - `messages`：对话历史（最多取最近 20 条），最后一条须为 user。
 - `birth`：可选；缺省时八字不排，提示词会引导道长主动向求测者索要生辰。
+
+响应为 SSE 流（`text/event-stream`）：先推 `chart` 事件（盘面数据，侧栏即时显示），随后逐段推 `delta` 事件（`content` 为正文、`reasoning` 为思考链），最后以 `done` 结束；上游中断时推 `error` 事件。请求阶段的错误（配置缺失、参数非法、连不上模型等）仍返回 JSON `{"error": "..."}`。

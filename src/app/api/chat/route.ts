@@ -1,12 +1,19 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { computeDivination, type BirthInfo } from "@/lib/divination";
 import { buildSystemPrompt } from "@/lib/prompt";
 import { searchCurrentAffairs } from "@/lib/search";
+import { logReading } from "@/lib/log";
 
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
 }
+
+// thinking 模式下模型响应可达数十秒到数分钟，放宽执行时限（部署平台按此值生效）
+export const maxDuration = 300;
+
+// 上游模型请求的超时时间：避免上游挂起导致请求无限等待（须小于 maxDuration）
+const UPSTREAM_TIMEOUT_MS = 280_000;
 
 function sanitizeBirth(raw: unknown): BirthInfo | null {
   if (!raw || typeof raw !== "object") return null;
@@ -75,6 +82,9 @@ export async function POST(req: NextRequest) {
     requestBody.temperature = 0.8;
   }
 
+  // 流式请求：thinking 模式下完整响应需数十秒到数分钟，非流式会让前端长时间无反馈
+  requestBody.stream = true;
+
   let upstream: Response;
   try {
     upstream = await fetch(`${baseUrl}/chat/completions`, {
@@ -84,8 +94,15 @@ export async function POST(req: NextRequest) {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
-  } catch {
+  } catch (e) {
+    if (e instanceof Error && e.name === "TimeoutError") {
+      return NextResponse.json(
+        { error: "模型推算超时，请稍后再问（可尝试关闭 thinking 模式）。" },
+        { status: 504 }
+      );
+    }
     return NextResponse.json({ error: "无法连接模型服务，请稍后再试。" }, { status: 502 });
   }
 
@@ -97,16 +114,86 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const data = await upstream.json();
-  const reply: string | undefined = data?.choices?.[0]?.message?.content;
-  if (!reply) {
+  if (!upstream.body) {
     return NextResponse.json({ error: "模型未返回内容。" }, { status: 502 });
   }
 
-  const reasoning: string | undefined = data?.choices?.[0]?.message?.reasoning_content;
-  return NextResponse.json({
-    reply,
-    reasoning: reasoning || undefined,
-    chart: { bazi: divination.bazi, meihua: divination.meihua, xiaoliuren: divination.xiaoliuren, daliuren: divination.daliuren },
+  // 以 SSE 转发给前端：先发盘面数据（侧栏即时显示），再逐段转发模型输出
+  const startedAt = Date.now();
+  let fullReply = "";
+  let fullReasoning = "";
+  const encoder = new TextEncoder();
+  const upstreamBody = upstream.body;
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: string, data: unknown) =>
+        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      try {
+        send("chart", {
+          bazi: divination.bazi,
+          meihua: divination.meihua,
+          xiaoliuren: divination.xiaoliuren,
+          daliuren: divination.daliuren,
+        });
+
+        const reader = upstreamBody.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? ""; // 末行可能不完整，留待下一块
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            const payload = trimmed.slice(5).trim();
+            if (payload === "[DONE]") continue;
+            try {
+              const delta = JSON.parse(payload)?.choices?.[0]?.delta;
+              const content: string | undefined = delta?.content;
+              const reasoning: string | undefined = delta?.reasoning_content;
+              if (content) fullReply += content;
+              if (reasoning) fullReasoning += reasoning;
+              if (content || reasoning) {
+                send("delta", {
+                  content: content || undefined,
+                  reasoning: reasoning || undefined,
+                });
+              }
+            } catch {
+              // 单条数据损坏则跳过，不中断整段回复
+            }
+          }
+        }
+        send("done", {});
+      } catch {
+        // 上游中途断开（含超时）：通知前端保留已收到的内容
+        send("error", { error: "模型服务连接中断，回复可能不完整。" });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  // 响应结束后记录问答（after 不阻塞流；未配置 Supabase 则静默跳过）
+  const question = messages[messages.length - 1].content;
+  after(() =>
+    logReading({
+      question,
+      reply: fullReply,
+      reasoning: fullReasoning || undefined,
+      birth,
+      model,
+      durationMs: Date.now() - startedAt,
+    })
+  );
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache",
+    },
   });
 }
