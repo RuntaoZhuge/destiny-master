@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { CITY_LONGITUDES } from "@/lib/cities";
 import ChartPanel, { type ChartData } from "./components/ChartPanel";
@@ -29,6 +29,45 @@ const SUGGESTIONS = [
 const BIRTH_STORAGE_KEY = "xuanwei-birth";
 
 const EMPTY_BIRTH: BirthForm = { date: "", time: "", gender: "", city: "" };
+
+// 消息气泡做 memo：流式更新时只有正在生成的那条重渲染，
+// 历史消息的 Markdown 不会被反复重解析
+const UserBubble = memo(function UserBubble({ content }: { content: string }) {
+  return (
+    <div className="flex justify-end">
+      <div className="max-w-[80%] rounded-2xl rounded-br-md bg-teal-800 px-4 py-3 text-sm leading-7 text-white shadow-sm">
+        {content}
+      </div>
+    </div>
+  );
+});
+
+const AssistantBubble = memo(function AssistantBubble({
+  content,
+  reasoning,
+}: {
+  content: string;
+  reasoning?: string;
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-teal-800/10 text-sm text-teal-800">
+        ☯
+      </div>
+      <div className="max-w-[85%] rounded-2xl rounded-tl-md border border-stone-200/80 bg-white px-5 py-4 text-sm leading-7 text-stone-800 shadow-sm">
+        {reasoning && (
+          <details className="mb-3 rounded-lg bg-stone-50 px-3 py-2 text-xs text-stone-500">
+            <summary className="cursor-pointer select-none font-medium text-stone-400 transition-colors hover:text-teal-700">
+              道长掐算心路（思考过程）
+            </summary>
+            <div className="mt-2 whitespace-pre-wrap leading-6">{reasoning}</div>
+          </details>
+        )}
+        <ReactMarkdown components={markdownComponents}>{content}</ReactMarkdown>
+      </div>
+    </div>
+  );
+});
 
 /** 道长回复的 Markdown 渲染样式 */
 const markdownComponents = {
@@ -84,7 +123,6 @@ export default function Home() {
   const [birth, setBirth] = useState<BirthForm>(EMPTY_BIRTH);
   const [chart, setChart] = useState<ChartData | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const mainRef = useRef<HTMLElement>(null);
   // 是否贴底跟随：流式输出时只有用户本就在底部才自动滚动，否则把滚轮还给用户
   const stickToBottomRef = useRef(true);
 
@@ -123,13 +161,17 @@ export default function Home() {
     }
   }, [messages, loading]);
 
-  function handleMainScroll() {
-    const el = mainRef.current;
-    if (!el) return;
-    // 距底 80px 内视为贴底
-    stickToBottomRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  }
+  // 实际滚动发生在 window（main 高度未受约束，overflow-y-auto 不生效），
+  // 用 capture 监听以兼容任何滚动容器；距底 80px 内视为贴底
+  useEffect(() => {
+    const onScroll = () => {
+      const doc = document.documentElement;
+      stickToBottomRef.current =
+        doc.scrollHeight - window.scrollY - window.innerHeight < 80;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    return () => window.removeEventListener("scroll", onScroll, { capture: true });
+  }, []);
 
   async function ask(question: string) {
     const q = question.trim();
@@ -174,20 +216,35 @@ export default function Home() {
       let event = "";
       let received = "";
 
+      // delta 攒批：每个 token 都 setState 会导致 ReactMarkdown 每秒重渲染数十次，
+      // 主线程被占满、滚轮卡死；攒 100ms 批量更新一次
+      let pendingContent = "";
+      let pendingReasoning = "";
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+      const flush = () => {
+        flushTimer = null;
+        const c = pendingContent;
+        const r = pendingReasoning;
+        if (!c && !r) return;
+        pendingContent = "";
+        pendingReasoning = "";
+        received += c;
+        setMessages((prev) => {
+          const copy = [...prev];
+          const last = { ...copy[copy.length - 1] };
+          last.content += c;
+          if (r) last.reasoning = (last.reasoning ?? "") + r;
+          copy[copy.length - 1] = last;
+          return copy;
+        });
+      };
       const applyDelta = (payload: {
         content?: string;
         reasoning?: string;
       }) => {
-        if (payload.content) received += payload.content;
-        setMessages((prev) => {
-          const copy = [...prev];
-          const last = { ...copy[copy.length - 1] };
-          if (payload.content) last.content += payload.content;
-          if (payload.reasoning)
-            last.reasoning = (last.reasoning ?? "") + payload.reasoning;
-          copy[copy.length - 1] = last;
-          return copy;
-        });
+        if (payload.content) pendingContent += payload.content;
+        if (payload.reasoning) pendingReasoning += payload.reasoning;
+        if (!flushTimer) flushTimer = setTimeout(flush, 100);
       };
 
       for (;;) {
@@ -214,6 +271,10 @@ export default function Home() {
           }
         }
       }
+
+      // 流结束：先冲刷攒批的最后一段，再判断是否为空
+      if (flushTimer) clearTimeout(flushTimer);
+      flush();
 
       if (!received) {
         // 流结束但无内容：移除空气泡并提示
@@ -259,7 +320,7 @@ export default function Home() {
       </header>
 
       {/* 消息区 + 右侧盘面 */}
-      <main ref={mainRef} onScroll={handleMainScroll} className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-6xl gap-8 px-4 py-8">
           <div className="flex min-w-0 flex-1 flex-col gap-5">
             {messages.length === 0 && (
@@ -291,32 +352,9 @@ export default function Home() {
 
             {messages.map((m, i) =>
               m.role === "user" ? (
-                <div key={i} className="flex justify-end">
-                  <div className="max-w-[80%] rounded-2xl rounded-br-md bg-teal-800 px-4 py-3 text-sm leading-7 text-white shadow-sm">
-                    {m.content}
-                  </div>
-                </div>
+                <UserBubble key={i} content={m.content} />
               ) : (
-                <div key={i} className="flex items-start gap-3">
-                  <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-teal-800/10 text-sm text-teal-800">
-                    ☯
-                  </div>
-                  <div className="max-w-[85%] rounded-2xl rounded-tl-md border border-stone-200/80 bg-white px-5 py-4 text-sm leading-7 text-stone-800 shadow-sm">
-                    {m.reasoning && (
-                      <details className="mb-3 rounded-lg bg-stone-50 px-3 py-2 text-xs text-stone-500">
-                        <summary className="cursor-pointer select-none font-medium text-stone-400 transition-colors hover:text-teal-700">
-                          道长掐算心路（思考过程）
-                        </summary>
-                        <div className="mt-2 whitespace-pre-wrap leading-6">
-                          {m.reasoning}
-                        </div>
-                      </details>
-                    )}
-                    <ReactMarkdown components={markdownComponents}>
-                      {m.content}
-                    </ReactMarkdown>
-                  </div>
-                </div>
+                <AssistantBubble key={i} content={m.content} reasoning={m.reasoning} />
               ),
             )}
 
