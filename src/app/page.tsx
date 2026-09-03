@@ -84,6 +84,9 @@ export default function Home() {
   const [birth, setBirth] = useState<BirthForm>(EMPTY_BIRTH);
   const [chart, setChart] = useState<ChartData | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
+  // 是否贴底跟随：流式输出时只有用户本就在底部才自动滚动，否则把滚轮还给用户
+  const stickToBottomRef = useRef(true);
 
   // 生辰信息暂存本地：挂载时读取（localStorage 仅客户端可用，必须在 effect 中回填），变更时写入
   useEffect(() => {
@@ -114,8 +117,19 @@ export default function Home() {
   }, [birth]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    // 贴底时才跟随滚动；用瞬时滚动，避免平滑动画在流式输出期间被反复重启、卡住滚轮
+    if (stickToBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "auto" });
+    }
   }, [messages, loading]);
+
+  function handleMainScroll() {
+    const el = mainRef.current;
+    if (!el) return;
+    // 距底 80px 内视为贴底
+    stickToBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
 
   async function ask(question: string) {
     const q = question.trim();
@@ -124,6 +138,7 @@ export default function Home() {
     setInput("");
 
     const next: Message[] = [...messages, { role: "user", content: q }];
+    stickToBottomRef.current = true; // 发问后强制回到底部
     setMessages(next);
     setLoading(true);
 
@@ -244,7 +259,7 @@ export default function Home() {
       </header>
 
       {/* 消息区 + 右侧盘面 */}
-      <main className="flex-1 overflow-y-auto">
+      <main ref={mainRef} onScroll={handleMainScroll} className="flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-6xl gap-8 px-4 py-8">
           <div className="flex min-w-0 flex-1 flex-col gap-5">
             {messages.length === 0 && (
