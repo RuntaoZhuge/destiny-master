@@ -27,6 +27,14 @@ const SUGGESTIONS = [
 ];
 
 const BIRTH_STORAGE_KEY = "xuanwei-birth";
+const SESSION_STORAGE_KEY = "xuanwei-session";
+
+const SHI_CHEN = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"];
+/** 当前钟表时辰（子=23–1 点，丑=1–3 点……） */
+function currentShiZhi(): string {
+  const h = new Date().getHours();
+  return SHI_CHEN[h === 23 ? 0 : Math.floor((h + 1) / 2) % 12];
+}
 
 const EMPTY_BIRTH: BirthForm = { date: "", time: "", gender: "", city: "" };
 
@@ -125,6 +133,12 @@ export default function Home() {
   const bottomRef = useRef<HTMLDivElement>(null);
   // 是否贴底跟随：流式输出时只有用户本就在底部才自动滚动，否则把滚轮还给用户
   const stickToBottomRef = useRef(true);
+  // 浏览器会话 id：未提供生辰时的身份标识，用于问答记录按人聚合
+  const sessionIdRef = useRef<string>("");
+  // 本 session 最近一次正时起课的钟表时辰；同一时辰再问须报数以活时起课
+  const zhengShiZhiRef = useRef<string | null>(null);
+  const [pendingAsk, setPendingAsk] = useState<string | null>(null);
+  const [baoShuInput, setBaoShuInput] = useState("");
 
   // 生辰信息暂存本地：挂载时读取（localStorage 仅客户端可用，必须在 effect 中回填），变更时写入
   useEffect(() => {
@@ -137,8 +151,14 @@ export default function Home() {
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setShowBirth(true);
       }
+      let sid = localStorage.getItem(SESSION_STORAGE_KEY);
+      if (!sid) {
+        sid = crypto.randomUUID();
+        localStorage.setItem(SESSION_STORAGE_KEY, sid);
+      }
+      sessionIdRef.current = sid;
     } catch {
-      // 本地数据损坏则忽略
+      // 本地数据损坏或隐私模式则忽略
     }
   }, []);
 
@@ -173,9 +193,22 @@ export default function Home() {
     return () => window.removeEventListener("scroll", onScroll, { capture: true });
   }, []);
 
-  async function ask(question: string) {
+  async function ask(question: string, baoShu?: number) {
     const q = question.trim();
     if (!q || loading) return;
+
+    // 同一时辰再问：依「初筮告，再三渎」之例，请善信报数，以活时起课
+    if (baoShu === undefined) {
+      const nowZhi = currentShiZhi();
+      if (zhengShiZhiRef.current === nowZhi) {
+        setPendingAsk(q);
+        setInput("");
+        setError(null);
+        return;
+      }
+      zhengShiZhiRef.current = nowZhi;
+    }
+
     setError(null);
     setInput("");
 
@@ -190,6 +223,8 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: next,
+          sessionId: sessionIdRef.current || undefined,
+          baoShu,
           birth: birth.date
             ? {
                 date: birth.date,
@@ -452,6 +487,46 @@ export default function Home() {
                   className="text-xs text-stone-400 transition-colors hover:text-red-500"
                 >
                   清除
+                </button>
+              </div>
+            )}
+
+            {pendingAsk && (
+              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-teal-700/30 bg-teal-800/5 p-3 shadow-sm">
+                <span className="w-full text-xs leading-5 text-stone-600">
+                  此时辰已起过一课。同一时辰再问，依「初筮告，再三渎」之例不复用正时——请善信随意报一数（1–12），道长以此活时为「{pendingAsk.length > 20 ? pendingAsk.slice(0, 20) + "…" : pendingAsk}」再起一盘。
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  max={999}
+                  value={baoShuInput}
+                  onChange={(e) => setBaoShuInput(e.target.value)}
+                  placeholder="报一数"
+                  className={`${fieldClass} w-24`}
+                />
+                <button
+                  onClick={() => {
+                    const n = parseInt(baoShuInput, 10);
+                    if (!Number.isInteger(n) || n < 1 || n > 999) return;
+                    const q = pendingAsk;
+                    setPendingAsk(null);
+                    setBaoShuInput("");
+                    ask(q, n);
+                  }}
+                  disabled={!baoShuInput.trim()}
+                  className="rounded-xl bg-teal-800 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-teal-700 disabled:opacity-40"
+                >
+                  报数起课
+                </button>
+                <button
+                  onClick={() => {
+                    setPendingAsk(null);
+                    setBaoShuInput("");
+                  }}
+                  className="text-xs text-stone-400 transition-colors hover:text-red-500"
+                >
+                  取消
                 </button>
               </div>
             )}

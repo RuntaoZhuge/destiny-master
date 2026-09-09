@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let body: { messages?: ChatMessage[]; birth?: unknown };
+  let body: { messages?: ChatMessage[]; birth?: unknown; sessionId?: unknown; baoShu?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -56,8 +56,16 @@ export async function POST(req: NextRequest) {
   }
 
   const birth = sanitizeBirth(body.birth);
-  // 排盘以「此刻问事时间」起卦，八字以用户提交的生辰排
-  const divination = computeDivination(birth, new Date());
+  // 未提供生辰时的身份标识（问答记录按人聚合用）
+  const sessionId =
+    typeof body.sessionId === "string" ? body.sessionId.slice(0, 64) : undefined;
+  // 报数：同一时辰内再问时，前端收集善信所报之数以活时起课（传统「初筮告，再三渎」）
+  const baoShu =
+    typeof body.baoShu === "number" && Number.isInteger(body.baoShu) && body.baoShu >= 1 && body.baoShu <= 999
+      ? body.baoShu
+      : undefined;
+  // 排盘以「此刻问事时间」起卦，八字以用户提交的生辰排；有报数则以活时起课
+  const divination = computeDivination(birth, new Date(), baoShu);
   // 涉及时势的问题联网打探（需配置 TAVILY_API_KEY，未配置自动跳过）
   const currentAffairs = await searchCurrentAffairs(messages[messages.length - 1].content);
   const systemPrompt = buildSystemPrompt(divination, currentAffairs);
@@ -185,6 +193,7 @@ export async function POST(req: NextRequest) {
       reply: fullReply,
       reasoning: fullReasoning || undefined,
       birth,
+      sessionId,
       model,
       durationMs: Date.now() - startedAt,
     })

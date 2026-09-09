@@ -359,8 +359,9 @@ export function computeDaLiuRenCore(
  * 大六壬起课。
  * @param now 占时（公历）
  * @param dayGanZhi 日干支（如 "庚寅"），缺省按占时当日取
+ * @param baoShu 善信所报之数（可选）。同一时辰再问时以报数取活时：(n-1)%12 为占时支，日干支与月将不变
  */
-export function buildDaLiuRen(now: Date, dayGanZhi?: string): { text: string; chart: DaLiuRenChart } {
+export function buildDaLiuRen(now: Date, dayGanZhi?: string, baoShu?: number): { text: string; chart: DaLiuRenChart } {
   const solar = Solar.fromYmdHms(
     now.getFullYear(),
     now.getMonth() + 1,
@@ -375,7 +376,8 @@ export function buildDaLiuRen(now: Date, dayGanZhi?: string): { text: string; ch
   const gz = dayGanZhi ?? ec.getDay();
   const ganIdx = GAN.indexOf(gz.charAt(0));
   const zhiIdx = ZHI.indexOf(gz.charAt(1));
-  const timeIdx = ZHI.indexOf(lunar.getTimeZhi());
+  // 活时：报数 1-12 对应 子-亥
+  const timeIdx = baoShu !== undefined ? (((baoShu - 1) % 12) + 12) % 12 : ZHI.indexOf(lunar.getTimeZhi());
 
   // --- 月将：以中气换将（getPrevQi(false) 按精确交节时刻回溯最近的中气） ---
   const zhongQi = lunar.getPrevQi(false).getName();
@@ -429,9 +431,13 @@ export function buildDaLiuRen(now: Date, dayGanZhi?: string): { text: string; ch
 
   // --- 注入提示词的文本 ---
   const lines: string[] = [];
-  lines.push(`【大六壬课】（以问事之时起课，月将加时顺布天盘）`);
   lines.push(
-    `占时：公历 ${solar.toYmd()} ${hh}:${mi}｜日干支 ${gz}（${ec.getDayXun()}旬，旬空：${xunKong.join("")}）｜时支 ${ZHI[timeIdx]}（${isDay ? "昼" : "夜"}占）`
+    baoShu !== undefined
+      ? `【大六壬课】（同一时辰再问，以善信报数 ${baoShu} 取活时起课，月将加时顺布天盘）`
+      : `【大六壬课】（以问事之时起课，月将加时顺布天盘）`
+  );
+  lines.push(
+    `占时：公历 ${solar.toYmd()} ${hh}:${mi}｜日干支 ${gz}（${ec.getDayXun()}旬，旬空：${xunKong.join("")}）｜时支 ${ZHI[timeIdx]}（${isDay ? "昼" : "夜"}占${baoShu !== undefined ? "，活时" : ""}）`
   );
   lines.push(`月将：${ZHI[jiangIdx]}·${JIANG_NAME[jiangIdx]}（${zhongQi}后所用之将，加于占时${ZHI[timeIdx]}上）`);
   lines.push(`天盘（地盘→天盘）：${ZHI.map((d, p) => `${d}→${tianPan[p]}`).join("　")}`);

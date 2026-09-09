@@ -280,7 +280,7 @@ function buildBaZi(birth: BirthInfo): { text: string; chart: BaZiChart } {
 // 梅花易数（按问事时间起卦）
 // ---------------------------------------------------------------------------
 
-function buildMeiHua(now: Date): { text: string; chart: MeiHuaChart } {
+function buildMeiHua(now: Date, baoShu?: number): { text: string; chart: MeiHuaChart } {
   const solar = Solar.fromYmdHms(
     now.getFullYear(),
     now.getMonth() + 1,
@@ -296,9 +296,19 @@ function buildMeiHua(now: Date): { text: string; chart: MeiHuaChart } {
   const dayNum = lunar.getDay(); // 农历日 1-30
   const hourZhiNum = EARTHLY_BRANCHES.indexOf(lunar.getTimeZhi()) + 1;
 
-  const upperNum = (yearZhiNum + monthNum + dayNum) % 8 || 8;
-  const lowerNum = (yearZhiNum + monthNum + dayNum + hourZhiNum) % 8 || 8;
-  const dongYao = (yearZhiNum + monthNum + dayNum + hourZhiNum) % 6 || 6;
+  let upperNum: number;
+  let lowerNum: number;
+  let dongYao: number;
+  if (baoShu !== undefined) {
+    // 报数起卦（一数法）：同一时辰再问，以所报之数为上卦，数加正时时支数为下卦、取动爻
+    upperNum = baoShu % 8 || 8;
+    lowerNum = (baoShu + hourZhiNum) % 8 || 8;
+    dongYao = (baoShu + hourZhiNum) % 6 || 6;
+  } else {
+    upperNum = (yearZhiNum + monthNum + dayNum) % 8 || 8;
+    lowerNum = (yearZhiNum + monthNum + dayNum + hourZhiNum) % 8 || 8;
+    dongYao = (yearZhiNum + monthNum + dayNum + hourZhiNum) % 6 || 6;
+  }
 
   // 本卦六爻（自下而上）
   const benLines = [...TRIGRAM_LINES[lowerNum], ...TRIGRAM_LINES[upperNum]];
@@ -317,11 +327,19 @@ function buildMeiHua(now: Date): { text: string; chart: MeiHuaChart } {
   const yongNum = tiIsUpper ? lowerNum : upperNum;
 
   const lines: string[] = [];
-  lines.push(`【梅花易数·时间起卦】（以问事之时起卦）`);
-  lines.push(
-    `起卦时间：公历 ${solar.toYmd()} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}｜农历 ${lunar.getMonthInChinese()}月${lunar.getDayInChinese()} ${lunar.getTimeZhi()}时`
-  );
-  lines.push(`起数：年支数${yearZhiNum}＋月数${monthNum}＋日数${dayNum}＝${yearZhiNum + monthNum + dayNum}；加时支数${hourZhiNum}＝${yearZhiNum + monthNum + dayNum + hourZhiNum}`);
+  if (baoShu !== undefined) {
+    lines.push(`【梅花易数·报数起卦】（同一时辰再问，依例以善信所报之数起卦）`);
+    lines.push(
+      `起卦时间：公历 ${solar.toYmd()} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}｜农历 ${lunar.getMonthInChinese()}月${lunar.getDayInChinese()} ${lunar.getTimeZhi()}时`
+    );
+    lines.push(`起数：善信报数${baoShu}为上卦；报数加正时时支数${hourZhiNum}＝${baoShu + hourZhiNum}，为下卦并取动爻`);
+  } else {
+    lines.push(`【梅花易数·时间起卦】（以问事之时起卦）`);
+    lines.push(
+      `起卦时间：公历 ${solar.toYmd()} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}｜农历 ${lunar.getMonthInChinese()}月${lunar.getDayInChinese()} ${lunar.getTimeZhi()}时`
+    );
+    lines.push(`起数：年支数${yearZhiNum}＋月数${monthNum}＋日数${dayNum}＝${yearZhiNum + monthNum + dayNum}；加时支数${hourZhiNum}＝${yearZhiNum + monthNum + dayNum + hourZhiNum}`);
+  }
   lines.push(
     `本卦：${HEXAGRAM_NAMES[upperNum][lowerNum]}（上${TRIGRAM_NAMES[upperNum]}${TRIGRAM_WUXING[upperNum]} 下${TRIGRAM_NAMES[lowerNum]}${TRIGRAM_WUXING[lowerNum]}），第${["初", "二", "三", "四", "五", "上"][dongYao - 1]}爻动`
   );
@@ -368,7 +386,7 @@ function wuxingRelation(ti: string, yong: string): string {
 // 小六壬（按问事时间起课）
 // ---------------------------------------------------------------------------
 
-function buildXiaoLiuRen(now: Date): { text: string; chart: XiaoLiuRenChart } {
+function buildXiaoLiuRen(now: Date, baoShu?: number): { text: string; chart: XiaoLiuRenChart } {
   const solar = Solar.fromYmdHms(
     now.getFullYear(),
     now.getMonth() + 1,
@@ -383,16 +401,23 @@ function buildXiaoLiuRen(now: Date): { text: string; chart: XiaoLiuRenChart } {
   const dayNum = lunar.getDay();
   const hourZhiIdx = EARTHLY_BRANCHES.indexOf(lunar.getTimeZhi()); // 子0…亥11
 
-  // 大安起正月，月上起日，日上起时
+  // 大安起正月，月上起日，日上起时；报数起课时以所报之数代时数
   const monthPos = (monthNum - 1) % 6;
   const dayPos = (monthPos + dayNum - 1) % 6;
-  const hourPos = (dayPos + hourZhiIdx) % 6;
+  const hourPos = baoShu !== undefined ? (dayPos + ((baoShu - 1) % 6)) % 6 : (dayPos + hourZhiIdx) % 6;
 
   const lines: string[] = [];
-  lines.push(`【小六壬课】（以问事之时起课）`);
-  lines.push(
-    `农历${lunar.getMonthInChinese()}月${lunar.getDayInChinese()} ${lunar.getTimeZhi()}时：月落${XIAO_LIU_REN[monthPos]}，日落${XIAO_LIU_REN[dayPos]}，时（最终结果）落【${XIAO_LIU_REN[hourPos]}】`
-  );
+  if (baoShu !== undefined) {
+    lines.push(`【小六壬课】（同一时辰再问，以善信报数 ${baoShu} 代时数起课）`);
+    lines.push(
+      `农历${lunar.getMonthInChinese()}月${lunar.getDayInChinese()} ${lunar.getTimeZhi()}时：月落${XIAO_LIU_REN[monthPos]}，日落${XIAO_LIU_REN[dayPos]}，报数（最终结果）落【${XIAO_LIU_REN[hourPos]}】`
+    );
+  } else {
+    lines.push(`【小六壬课】（以问事之时起课）`);
+    lines.push(
+      `农历${lunar.getMonthInChinese()}月${lunar.getDayInChinese()} ${lunar.getTimeZhi()}时：月落${XIAO_LIU_REN[monthPos]}，日落${XIAO_LIU_REN[dayPos]}，时（最终结果）落【${XIAO_LIU_REN[hourPos]}】`
+    );
+  }
 
   const chart: XiaoLiuRenChart = {
     monthPalace: XIAO_LIU_REN[monthPos],
@@ -411,8 +436,10 @@ function buildXiaoLiuRen(now: Date): { text: string; chart: XiaoLiuRenChart } {
  * 计算所有盘面，返回注入模型的文本与结构化盘面数据。
  * @param birth 生辰信息（可选，有则排八字）
  * @param now   问事时间（用于梅花易数、小六壬起卦）
+ * @param baoShu 善信所报之数（可选）。同一时辰内再问时由前端收集报数传入，
+ *               梅花改报数起卦、小六壬以报数代时数、大六壬以报数取活时。
  */
-export function computeDivination(birth: BirthInfo | null, now: Date): DivinationContext {
+export function computeDivination(birth: BirthInfo | null, now: Date, baoShu?: number): DivinationContext {
   const parts: string[] = [];
   let bazi: BaZiChart | null = null;
   if (birth?.date) {
@@ -424,9 +451,9 @@ export function computeDivination(birth: BirthInfo | null, now: Date): Divinatio
       parts.push("【八字命盘】生辰信息有误，未能排盘。");
     }
   }
-  const meihua = buildMeiHua(now);
-  const xiaoliuren = buildXiaoLiuRen(now);
-  const daliuren = buildDaLiuRen(now);
+  const meihua = buildMeiHua(now, baoShu);
+  const xiaoliuren = buildXiaoLiuRen(now, baoShu);
+  const daliuren = buildDaLiuRen(now, undefined, baoShu);
   parts.push(meihua.text, xiaoliuren.text, daliuren.text);
   return { text: parts.join("\n\n"), bazi, meihua: meihua.chart, xiaoliuren: xiaoliuren.chart, daliuren: daliuren.chart };
 }

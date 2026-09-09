@@ -40,7 +40,7 @@ npm run dev
 
 配置 Supabase 免费层后，每次问答（问题、断语、思考链、生辰、模型、耗时）会写入数据库，供事后复盘、调优提示词。未配置则自动跳过，不影响正常使用。
 
-1. 建表：`supabase/migrations/20260903000000_create_readings.sql` 即建表脚本（含 RLS：不开任何 policy，anon key 不可读写），随部署自动执行。
+1. 建表：`supabase/migrations/` 下的建表脚本（含 RLS：不开任何 policy，anon key 不可读写），随部署自动执行。记录按「人」聚合在 `conversations` 表：提供了生辰以来访者生辰哈希为身份（同一八字视为同一人），未提供生辰以浏览器会话 id 为身份；同一身份的问答追加在同一行的 `messages` 数组里（只留最近 50 条）。
 2. 环境变量：Supabase 已与 Vercel 集成时，`SUPABASE_URL` 和 `SUPABASE_SERVICE_ROLE_KEY` 会自动注入 Vercel 项目；本地开发用 `vercel env pull` 拉取，或手动填入 `.env.local`。service_role key 仅服务端可见，勿暴露给前端。
 
 写入逻辑在 `src/lib/log.ts`（纯 fetch 调 PostgREST，无额外依赖），通过 Next 的 `after()` 在响应结束后落库，不拖慢回答。
