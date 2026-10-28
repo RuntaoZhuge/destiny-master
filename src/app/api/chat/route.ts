@@ -57,6 +57,7 @@ export async function POST(req: NextRequest) {
     castAt?: unknown;
     recase?: unknown;
     askCity?: unknown;
+    tz?: unknown;
   };
   try {
     body = await req.json();
@@ -86,16 +87,18 @@ export async function POST(req: NextRequest) {
     typeof body.baoShu === "number" && Number.isInteger(body.baoShu) && body.baoShu >= 1 && body.baoShu <= 999
       ? body.baoShu
       : undefined;
-  // 问事地点：未单独填写时沿用出生地；都没有则按北京时间（未校正真太阳时）
+  // 问事地点：填了按当地真太阳时；没填则用浏览器时区；都没有才退回北京时间
   const askCity =
     typeof body.askCity === "string" && body.askCity.trim()
       ? body.askCity.trim().slice(0, 30)
-      : birth?.city ?? null;
+      : null;
+  const askTz =
+    typeof body.tz === "string" && body.tz.trim() ? body.tz.trim().slice(0, 64) : null;
   // 起课：默认沿用前端传来的「本课」时刻；只有明确另起一课才换新时刻。
   // 「一事一占」——同一件事多轮追问始终读同一张盘，避免盘面变了而模型自认算错。
   const castAt = parseCastAt(body.castAt);
   const recast = body.recase === true;
-  const divination = computeDivination(birth, castAt, baoShu, askCity);
+  const divination = computeDivination(birth, castAt, baoShu, askCity, askTz);
   // 涉及时势的问题联网打探（需配置 TAVILY_API_KEY，未配置自动跳过）
   const currentAffairs = await searchCurrentAffairs(messages[messages.length - 1].content);
   const systemPrompt = buildSystemPrompt(divination, currentAffairs, recast);

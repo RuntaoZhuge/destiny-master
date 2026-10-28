@@ -390,16 +390,18 @@ function buildXiaoLiuRen(time: TimeInput, baoShu?: number): { text: string; char
 /**
  * 计算所有盘面，返回注入模型的文本与结构化盘面数据。
  * @param birth 生辰信息（可选，有则排八字）
- * @param now   问事时刻（任意时区；内部按问事地点的真太阳时解读）
+ * @param now   问事时刻（任何时区；按问事地点真太阳时或浏览器当地时间解读）
  * @param baoShu 善信所报之数（可选）。同一时辰内再问时由前端收集报数传入，
  *               梅花改报数起卦、小六壬以报数代时数、大六壬以报数取活时。
- * @param askCity 问事地点（可选）。有经度则按当地真太阳时排盘，否则按北京时间。
+ * @param askCity 问事地点（可选）。有经度则按当地真太阳时排盘。
+ * @param askTz  浏览器 IANA 时区（可选）。未填地点时按当地时间排盘。
  */
 export function computeDivination(
   birth: BirthInfo | null,
   now: Date,
   baoShu?: number,
-  askCity?: string | null
+  askCity?: string | null,
+  askTz?: string | null
 ): DivinationContext {
   const parts: string[] = [];
   let bazi: BaZiChart | null = null;
@@ -413,9 +415,9 @@ export function computeDivination(
     }
   }
 
-  // 问事盘按问事地点的真太阳时起课；未提供或未收录地点时退回北京时间
+  // 问事盘：填了地点按当地真太阳时；没填则按浏览器当地时间；都没有才退回北京时间
   const askLongitude = askCity ? lookupLongitude(askCity) : null;
-  const qt = questionTime(now, askLongitude);
+  const qt = questionTime(now, askLongitude, askTz);
   const sign = qt.correctionMinutes >= 0 ? "+" : "−";
   const lonLabel =
     askLongitude === null
@@ -423,11 +425,18 @@ export function computeDivination(
       : askLongitude >= 0
         ? `东经${askLongitude}°`
         : `西经${Math.abs(askLongitude)}°`;
-  const timeLabel = qt.corrected
-    ? `真太阳时，${askCity}，${lonLabel}，校正${sign}${Math.abs(qt.correctionMinutes).toFixed(1)}分`
-    : askCity
-      ? `北京时间，${askCity}未收录经度，未校正`
+  let timeLabel: string;
+  if (qt.basis === "city") {
+    timeLabel = `真太阳时，${askCity}，${lonLabel}，校正${sign}${Math.abs(qt.correctionMinutes).toFixed(1)}分`;
+  } else if (qt.basis === "local") {
+    timeLabel = askCity
+      ? `当地时间，${askTz}，未校正真太阳时，${askCity}未收录经度`
+      : `当地时间，${askTz}，未校正真太阳时`;
+  } else {
+    timeLabel = askCity
+      ? `北京时间，${askCity}未收录经度，未校正真太阳时`
       : "北京时间，未校正真太阳时";
+  }
 
   const meihua = buildMeiHua(qt, baoShu, timeLabel);
   const xiaoliuren = buildXiaoLiuRen(qt, baoShu);

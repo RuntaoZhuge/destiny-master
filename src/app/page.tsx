@@ -25,10 +25,12 @@ interface ActiveChart {
   castAt: number;
   /** 报数活时：追问时须原样带回，才能复现同一张盘 */
   baoShu?: number;
-  /** 起课时的时辰（按问事地点的真太阳时），用于判断「另起一课」是否需要报数 */
+  /** 起课时的时辰（按实际时间口径），用于判断「另起一课」是否需要报数 */
   shiZhi: string;
-  /** 起课使用的问事地点；追问时沿用，避免盘面漂移 */
+  /** 起课使用的问事地点；与 tz 二选一 */
   city?: string;
+  /** 未填地点时使用的浏览器 IANA 时区，如 Australia/Melbourne */
+  tz?: string;
 }
 
 const SUGGESTIONS = [
@@ -43,9 +45,19 @@ const BIRTH_STORAGE_KEY = "xuanwei-birth";
 const SESSION_STORAGE_KEY = "xuanwei-session";
 const ASK_CITY_STORAGE_KEY = "xuanwei-ask-city";
 
-/** 某课在问事地点的时辰（真太阳时；未收录地点则按北京时间）。 */
-function shiZhiAt(instant: number, city?: string): string {
-  const { hour } = questionTime(new Date(instant), lookupLongitude(city ?? ""));
+/** 浏览器 IANA 时区；拿不到时返回 undefined。 */
+function browserTimeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 某课实际使用的时辰：填了城市看真太阳时，否则看浏览器当地时。 */
+function shiZhiAt(instant: number, city?: string, tz?: string): string {
+  const longitude = city ? lookupLongitude(city) : null;
+  const { hour } = questionTime(new Date(instant), longitude, tz);
   return shiZhiOf(hour);
 }
 
@@ -227,12 +239,14 @@ export default function Home() {
     const q = question.trim();
     if (!q || loading) return;
 
-    // 本问使用的问事地点：新起课看输入框（默认出生地），追问沿用本课
-    const inputCity = (askCity.trim() || birth.city).trim() || undefined;
+    // 新起课：填了地点按真太阳时，没填按浏览器当地时间；追问沿用本课
+    const inputCity = askCity.trim() || undefined;
+    const inputTz = browserTimeZone();
     // 一事一占：追问沿用本课；只有点「另起一课」才重新起课。
     let castAt: number;
     let castBaoShu: number | undefined;
     let castCity: string | undefined;
+    let castTz: string | undefined;
     let recast = false;
 
     if (baoShu !== undefined) {
@@ -240,12 +254,19 @@ export default function Home() {
       castAt = Date.now();
       castBaoShu = baoShu;
       castCity = inputCity;
+      castTz = inputTz;
       recast = true;
-      setActiveChart({ castAt, baoShu, city: castCity, shiZhi: shiZhiAt(castAt, castCity) });
+      setActiveChart({
+        castAt,
+        baoShu,
+        city: castCity,
+        tz: castTz,
+        shiZhi: shiZhiAt(castAt, castCity, castTz),
+      });
       setRecastArmed(false);
     } else if (recastArmed) {
       const now = Date.now();
-      const nowZhi = shiZhiAt(now, inputCity);
+      const nowZhi = shiZhiAt(now, inputCity, inputTz);
       if (activeChart && activeChart.shiZhi === nowZhi) {
         // 同一时辰另起一课，依「初筮告，再三渎」之例先请善信报数
         setPendingAsk(q);
@@ -256,19 +277,27 @@ export default function Home() {
       // 跨时辰另起一课：直接按新时辰正时起课
       castAt = now;
       castCity = inputCity;
+      castTz = inputTz;
       recast = true;
-      setActiveChart({ castAt, city: castCity, shiZhi: nowZhi });
+      setActiveChart({ castAt, city: castCity, tz: castTz, shiZhi: nowZhi });
       setRecastArmed(false);
     } else if (activeChart) {
-      // 同一件事继续问：沿用本课的起课时刻、报数与问事地点，盘面不重排
+      // 同一件事继续问：沿用本课的起课时刻、报数与时区口径，盘面不重排
       castAt = activeChart.castAt;
       castBaoShu = activeChart.baoShu;
       castCity = activeChart.city;
+      castTz = activeChart.tz;
     } else {
       // 第一问：按此刻正时起课
       castAt = Date.now();
       castCity = inputCity;
-      setActiveChart({ castAt, city: castCity, shiZhi: shiZhiAt(castAt, castCity) });
+      castTz = inputTz;
+      setActiveChart({
+        castAt,
+        city: castCity,
+        tz: castTz,
+        shiZhi: shiZhiAt(castAt, castCity, castTz),
+      });
     }
 
     setError(null);
@@ -290,6 +319,7 @@ export default function Home() {
           baoShu: castBaoShu,
           recase: recast,
           askCity: castCity,
+          tz: castTz,
           birth: birth.date
             ? {
                 date: birth.date,
@@ -395,15 +425,23 @@ export default function Home() {
   const fieldClass =
     "rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-800 outline-none transition-colors focus:border-teal-600 focus:ring-2 focus:ring-teal-600/15";
 
-  // 本课实际使用的问事地点与真太阳时读数（用于底部徽标）
+  // 本课实际使用的时间口径与读数（用于底部徽标）
   const activeTime = activeChart
-    ? questionTime(new Date(activeChart.castAt), lookupLongitude(activeChart.city ?? ""))
+    ? questionTime(
+        new Date(activeChart.castAt),
+        lookupLongitude(activeChart.city ?? ""),
+        activeChart.tz
+      )
     : null;
-  const activeBasis = activeTime?.corrected
-    ? `${activeChart?.city ?? ""}真太阳时`
-    : "北京时间";
-  // 下一课将使用的问事地点（输入优先，其次出生地）
-  const nextCity = (askCity.trim() || birth.city).trim();
+  const activeBasis =
+    activeTime?.basis === "city"
+      ? `${activeChart?.city ?? ""}真太阳时`
+      : activeTime?.basis === "local"
+        ? "当地时间"
+        : "北京时间";
+  // 下一课将使用的问事地点（留空则用浏览器时区）
+  const nextCity = askCity.trim();
+  const currentTz = browserTimeZone();
 
   return (
     <div className="flex flex-col flex-1 min-h-screen">
@@ -519,7 +557,10 @@ export default function Home() {
                 </span>
               )}
               {activeChart && activeTime && (
-                <span className="rounded-full bg-stone-200/70 px-2.5 py-0.5 text-xs text-stone-500">
+                <span
+                  title={activeChart.tz ?? undefined}
+                  className="rounded-full bg-stone-200/70 px-2.5 py-0.5 text-xs text-stone-500"
+                >
                   本课 {clockOf(activeTime)}（{activeBasis}）
                   {activeChart.baoShu ? ` · 报数${activeChart.baoShu}` : " · 正时"}
                 </span>
@@ -590,7 +631,7 @@ export default function Home() {
                 list="ask-cities"
                 value={askCity}
                 onChange={(e) => setAskCity(e.target.value)}
-                placeholder={birth.city ? `默认：${birth.city}` : "填城市按真太阳时"}
+                placeholder="留空按浏览器当地时间"
                 className={`${fieldClass} w-40`}
               />
               <datalist id="ask-cities">
@@ -599,14 +640,15 @@ export default function Home() {
                 ))}
               </datalist>
               <span className="text-xs text-stone-300">
-                留空沿用出生地；未收录城市按北京时间
+                留空按浏览器当地时间；填城市按真太阳时
               </span>
             </div>
             {(!activeChart || recastArmed) &&
               nextCity &&
               lookupLongitude(nextCity) === null && (
                 <p className="mb-2 text-xs leading-5 text-amber-600">
-                  「{nextCity}」未收录经度，下一课按北京时间起课（未校正真太阳时）。
+                  「{nextCity}」未收录经度，下一课按
+                  {currentTz ? "浏览器当地时间" : "北京时间"}起课（未校正真太阳时）。
                 </p>
               )}
 
