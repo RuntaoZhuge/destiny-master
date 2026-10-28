@@ -1,6 +1,14 @@
 import { Solar, Lunar } from "lunar-javascript";
 import { lookupLongitude } from "./cities";
 import { buildDaLiuRen, type DaLiuRenChart } from "./daliuren";
+import {
+  beijingTime,
+  clockOf,
+  questionTime,
+  toTrueSolarTime,
+  type BeijingTimeParts,
+  type SolarTime,
+} from "./time";
 
 /**
  * 排盘计算模块：所有术数盘面都在这里用确定性算法计算，
@@ -117,60 +125,6 @@ export interface XiaoLiuRenChart {
 }
 
 // ---------------------------------------------------------------------------
-// 真太阳时换算
-// ---------------------------------------------------------------------------
-
-/** 均时差（分钟）：真太阳时 − 平太阳时，按日期的近似公式。 */
-function equationOfTime(dayOfYear: number): number {
-  const b = ((2 * Math.PI) / 365) * (dayOfYear - 81);
-  return 9.87 * Math.sin(2 * b) - 7.53 * Math.cos(b) - 1.5 * Math.sin(b);
-}
-
-interface SolarTimeResult {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-  /** 相对原时刻的总修正分钟数（经度时差 + 均时差） */
-  correctionMinutes: number;
-  longitudeMinutes: number;
-  equationMinutes: number;
-}
-
-/**
- * 将北京时间（东八区，中央经线 120°E）换算为出生地真太阳时。
- * 全程用 UTC 算术，不受服务器时区影响；跨日界自动处理。
- */
-function toTrueSolarTime(
-  y: number,
-  m: number,
-  d: number,
-  hh: number,
-  mi: number,
-  longitude: number
-): SolarTimeResult {
-  // 输入视为北京时间（UTC+8）
-  const utcMs = Date.UTC(y, m - 1, d, hh - 8, mi);
-  const dayOfYear = Math.floor((Date.UTC(y, m - 1, d) - Date.UTC(y, 0, 0)) / 86400000);
-  const longitudeMinutes = (longitude - 120) * 4; // 每度 4 分钟
-  const equationMinutes = equationOfTime(dayOfYear);
-  const corrected = new Date(utcMs + (longitudeMinutes + equationMinutes) * 60000);
-  // 转回北京时间轴读数
-  const beijing = new Date(corrected.getTime() + 8 * 3600000);
-  return {
-    year: beijing.getUTCFullYear(),
-    month: beijing.getUTCMonth() + 1,
-    day: beijing.getUTCDate(),
-    hour: beijing.getUTCHours(),
-    minute: beijing.getUTCMinutes(),
-    correctionMinutes: longitudeMinutes + equationMinutes,
-    longitudeMinutes,
-    equationMinutes,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // 八字（子平四柱）
 // ---------------------------------------------------------------------------
 
@@ -195,7 +149,7 @@ function buildBaZi(birth: BirthInfo): { text: string; chart: BaZiChart } {
   let pd = d;
   let ph = hh;
   let pmi = mi;
-  let tst: SolarTimeResult | null = null;
+  let tst: SolarTime | null = null;
   if (useTrueSolar && longitude !== null) {
     tst = toTrueSolarTime(y, m, d, hh, mi, longitude);
     py = tst.year;
@@ -280,15 +234,22 @@ function buildBaZi(birth: BirthInfo): { text: string; chart: BaZiChart } {
 // 梅花易数（按问事时间起卦）
 // ---------------------------------------------------------------------------
 
-function buildMeiHua(now: Date, baoShu?: number): { text: string; chart: MeiHuaChart } {
-  const solar = Solar.fromYmdHms(
-    now.getFullYear(),
-    now.getMonth() + 1,
-    now.getDate(),
-    now.getHours(),
-    now.getMinutes(),
-    0
-  );
+/** 排盘时刻：既接受真实 Date，也接受已按真太阳时校正过的读数。 */
+type TimeInput = Date | BeijingTimeParts;
+
+function timePartsOf(input: TimeInput): BeijingTimeParts {
+  return input instanceof Date ? beijingTime(input) : input;
+}
+
+function buildMeiHua(
+  time: TimeInput,
+  baoShu?: number,
+  timeLabel = "北京时间，未校正真太阳时"
+): { text: string; chart: MeiHuaChart } {
+  // 问事时间一律按问事地点的真太阳时解读，避免服务器时区（如 Vercel 的 UTC）带偏时支与日干支
+  const t = timePartsOf(time);
+  const clock = clockOf(t);
+  const solar = Solar.fromYmdHms(t.year, t.month, t.day, t.hour, t.minute, 0);
   const lunar = solar.getLunar();
 
   const yearZhiNum = EARTHLY_BRANCHES.indexOf(lunar.getYearZhi()) + 1; // 子1…亥12
@@ -330,13 +291,13 @@ function buildMeiHua(now: Date, baoShu?: number): { text: string; chart: MeiHuaC
   if (baoShu !== undefined) {
     lines.push(`【梅花易数·报数起卦】（同一时辰再问，依例以善信所报之数起卦）`);
     lines.push(
-      `起卦时间：公历 ${solar.toYmd()} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}｜农历 ${lunar.getMonthInChinese()}月${lunar.getDayInChinese()} ${lunar.getTimeZhi()}时`
+      `起卦时间：公历 ${solar.toYmd()} ${clock}（${timeLabel}）｜农历 ${lunar.getMonthInChinese()}月${lunar.getDayInChinese()} ${lunar.getTimeZhi()}时`
     );
     lines.push(`起数：善信报数${baoShu}为上卦；报数加正时时支数${hourZhiNum}＝${baoShu + hourZhiNum}，为下卦并取动爻`);
   } else {
     lines.push(`【梅花易数·时间起卦】（以问事之时起卦）`);
     lines.push(
-      `起卦时间：公历 ${solar.toYmd()} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}｜农历 ${lunar.getMonthInChinese()}月${lunar.getDayInChinese()} ${lunar.getTimeZhi()}时`
+      `起卦时间：公历 ${solar.toYmd()} ${clock}（${timeLabel}）｜农历 ${lunar.getMonthInChinese()}月${lunar.getDayInChinese()} ${lunar.getTimeZhi()}时`
     );
     lines.push(`起数：年支数${yearZhiNum}＋月数${monthNum}＋日数${dayNum}＝${yearZhiNum + monthNum + dayNum}；加时支数${hourZhiNum}＝${yearZhiNum + monthNum + dayNum + hourZhiNum}`);
   }
@@ -359,7 +320,7 @@ function buildMeiHua(now: Date, baoShu?: number): { text: string; chart: MeiHuaC
     ti: { name: TRIGRAM_NAMES[tiNum], wuXing: TRIGRAM_WUXING[tiNum] },
     yong: { name: TRIGRAM_NAMES[yongNum], wuXing: TRIGRAM_WUXING[yongNum] },
     relation: wuxingRelation(TRIGRAM_WUXING[tiNum], TRIGRAM_WUXING[yongNum]),
-    timeText: `${solar.toYmd()} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}｜农历${lunar.getMonthInChinese()}月${lunar.getDayInChinese()} ${lunar.getTimeZhi()}时`,
+    timeText: `${solar.toYmd()} ${clock}（${timeLabel}）｜农历${lunar.getMonthInChinese()}月${lunar.getDayInChinese()} ${lunar.getTimeZhi()}时`,
   };
   return { text: lines.join("\n"), chart };
 }
@@ -386,15 +347,9 @@ function wuxingRelation(ti: string, yong: string): string {
 // 小六壬（按问事时间起课）
 // ---------------------------------------------------------------------------
 
-function buildXiaoLiuRen(now: Date, baoShu?: number): { text: string; chart: XiaoLiuRenChart } {
-  const solar = Solar.fromYmdHms(
-    now.getFullYear(),
-    now.getMonth() + 1,
-    now.getDate(),
-    now.getHours(),
-    now.getMinutes(),
-    0
-  );
+function buildXiaoLiuRen(time: TimeInput, baoShu?: number): { text: string; chart: XiaoLiuRenChart } {
+  const t = timePartsOf(time);
+  const solar = Solar.fromYmdHms(t.year, t.month, t.day, t.hour, t.minute, 0);
   const lunar = solar.getLunar();
 
   const monthNum = lunar.getMonth();
@@ -435,11 +390,17 @@ function buildXiaoLiuRen(now: Date, baoShu?: number): { text: string; chart: Xia
 /**
  * 计算所有盘面，返回注入模型的文本与结构化盘面数据。
  * @param birth 生辰信息（可选，有则排八字）
- * @param now   问事时间（用于梅花易数、小六壬起卦）
+ * @param now   问事时刻（任意时区；内部按问事地点的真太阳时解读）
  * @param baoShu 善信所报之数（可选）。同一时辰内再问时由前端收集报数传入，
  *               梅花改报数起卦、小六壬以报数代时数、大六壬以报数取活时。
+ * @param askCity 问事地点（可选）。有经度则按当地真太阳时排盘，否则按北京时间。
  */
-export function computeDivination(birth: BirthInfo | null, now: Date, baoShu?: number): DivinationContext {
+export function computeDivination(
+  birth: BirthInfo | null,
+  now: Date,
+  baoShu?: number,
+  askCity?: string | null
+): DivinationContext {
   const parts: string[] = [];
   let bazi: BaZiChart | null = null;
   if (birth?.date) {
@@ -451,9 +412,26 @@ export function computeDivination(birth: BirthInfo | null, now: Date, baoShu?: n
       parts.push("【八字命盘】生辰信息有误，未能排盘。");
     }
   }
-  const meihua = buildMeiHua(now, baoShu);
-  const xiaoliuren = buildXiaoLiuRen(now, baoShu);
-  const daliuren = buildDaLiuRen(now, undefined, baoShu);
+
+  // 问事盘按问事地点的真太阳时起课；未提供或未收录地点时退回北京时间
+  const askLongitude = askCity ? lookupLongitude(askCity) : null;
+  const qt = questionTime(now, askLongitude);
+  const sign = qt.correctionMinutes >= 0 ? "+" : "−";
+  const lonLabel =
+    askLongitude === null
+      ? ""
+      : askLongitude >= 0
+        ? `东经${askLongitude}°`
+        : `西经${Math.abs(askLongitude)}°`;
+  const timeLabel = qt.corrected
+    ? `真太阳时，${askCity}，${lonLabel}，校正${sign}${Math.abs(qt.correctionMinutes).toFixed(1)}分`
+    : askCity
+      ? `北京时间，${askCity}未收录经度，未校正`
+      : "北京时间，未校正真太阳时";
+
+  const meihua = buildMeiHua(qt, baoShu, timeLabel);
+  const xiaoliuren = buildXiaoLiuRen(qt, baoShu);
+  const daliuren = buildDaLiuRen(qt, undefined, baoShu, timeLabel);
   parts.push(meihua.text, xiaoliuren.text, daliuren.text);
   return { text: parts.join("\n\n"), bazi, meihua: meihua.chart, xiaoliuren: xiaoliuren.chart, daliuren: daliuren.chart };
 }

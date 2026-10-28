@@ -1,4 +1,5 @@
 import { Solar } from "lunar-javascript";
+import { beijingTime, type BeijingTimeParts } from "./time";
 
 /**
  * 大六壬排盘：月将加时布天盘，立四课，依九宗门发三传，
@@ -357,19 +358,19 @@ export function computeDaLiuRenCore(
 
 /**
  * 大六壬起课。
- * @param now 占时（公历）
+ * @param now 占时（真实 Date，或已按真太阳时校正过的读数）
  * @param dayGanZhi 日干支（如 "庚寅"），缺省按占时当日取
  * @param baoShu 善信所报之数（可选）。同一时辰再问时以报数取活时：(n-1)%12 为占时支，日干支与月将不变
+ * @param timeLabel 口径说明（北京时间 / 某地真太阳时），写入盘面文本
  */
-export function buildDaLiuRen(now: Date, dayGanZhi?: string, baoShu?: number): { text: string; chart: DaLiuRenChart } {
-  const solar = Solar.fromYmdHms(
-    now.getFullYear(),
-    now.getMonth() + 1,
-    now.getDate(),
-    now.getHours(),
-    now.getMinutes(),
-    0
-  );
+export function buildDaLiuRen(
+  now: Date | BeijingTimeParts,
+  dayGanZhi?: string,
+  baoShu?: number,
+  timeLabel = "北京时间，未校正真太阳时"
+): { text: string; chart: DaLiuRenChart } {
+  const t = now instanceof Date ? beijingTime(now) : now;
+  const solar = Solar.fromYmdHms(t.year, t.month, t.day, t.hour, t.minute, 0);
   const lunar = solar.getLunar();
   const ec = lunar.getEightChar();
 
@@ -425,9 +426,9 @@ export function buildDaLiuRen(now: Date, dayGanZhi?: string, baoShu?: number): {
     xiaIsDayGan: i === 0,
   }));
 
-  const hh = String(now.getHours()).padStart(2, "0");
-  const mi = String(now.getMinutes()).padStart(2, "0");
-  const timeText = `${solar.toYmd()} ${hh}:${mi}｜${gz}日 ${ZHI[timeIdx]}时`;
+  const hh = String(t.hour).padStart(2, "0");
+  const mi = String(t.minute).padStart(2, "0");
+  const timeText = `${solar.toYmd()} ${hh}:${mi}（${timeLabel}）｜${gz}日 ${ZHI[timeIdx]}时`;
 
   // --- 注入提示词的文本 ---
   const lines: string[] = [];
@@ -437,7 +438,7 @@ export function buildDaLiuRen(now: Date, dayGanZhi?: string, baoShu?: number): {
       : `【大六壬课】（以问事之时起课，月将加时顺布天盘）`
   );
   lines.push(
-    `占时：公历 ${solar.toYmd()} ${hh}:${mi}｜日干支 ${gz}（${ec.getDayXun()}旬，旬空：${xunKong.join("")}）｜时支 ${ZHI[timeIdx]}（${isDay ? "昼" : "夜"}占${baoShu !== undefined ? "，活时" : ""}）`
+    `占时：公历 ${solar.toYmd()} ${hh}:${mi}（${timeLabel}）｜日干支 ${gz}（${ec.getDayXun()}旬，旬空：${xunKong.join("")}）｜时支 ${ZHI[timeIdx]}（${isDay ? "昼" : "夜"}占${baoShu !== undefined ? "，活时" : ""}）`
   );
   lines.push(`月将：${ZHI[jiangIdx]}·${JIANG_NAME[jiangIdx]}（${zhongQi}后所用之将，加于占时${ZHI[timeIdx]}上）`);
   lines.push(`天盘（地盘→天盘）：${ZHI.map((d, p) => `${d}→${tianPan[p]}`).join("　")}`);

@@ -2,7 +2,8 @@
 
 import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { CITY_LONGITUDES } from "@/lib/cities";
+import { CITY_LONGITUDES, lookupLongitude } from "@/lib/cities";
+import { clockOf, questionTime, shiZhiOf } from "@/lib/time";
 import ChartPanel, { type ChartData } from "./components/ChartPanel";
 
 interface Message {
@@ -24,8 +25,10 @@ interface ActiveChart {
   castAt: number;
   /** 报数活时：追问时须原样带回，才能复现同一张盘 */
   baoShu?: number;
-  /** 起课时的钟表时辰，用于判断「另起一课」是否需要报数 */
+  /** 起课时的时辰（按问事地点的真太阳时），用于判断「另起一课」是否需要报数 */
   shiZhi: string;
+  /** 起课使用的问事地点；追问时沿用，避免盘面漂移 */
+  city?: string;
 }
 
 const SUGGESTIONS = [
@@ -38,18 +41,12 @@ const SUGGESTIONS = [
 
 const BIRTH_STORAGE_KEY = "xuanwei-birth";
 const SESSION_STORAGE_KEY = "xuanwei-session";
+const ASK_CITY_STORAGE_KEY = "xuanwei-ask-city";
 
-const SHI_CHEN = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"];
-/** 当前钟表时辰（子=23–1 点，丑=1–3 点……） */
-function currentShiZhi(): string {
-  const h = new Date().getHours();
-  return SHI_CHEN[h === 23 ? 0 : Math.floor((h + 1) / 2) % 12];
-}
-
-/** 起课时刻显示为 HH:mm（本机时钟） */
-function formatClock(ts: number): string {
-  const d = new Date(ts);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+/** 某课在问事地点的时辰（真太阳时；未收录地点则按北京时间）。 */
+function shiZhiAt(instant: number, city?: string): string {
+  const { hour } = questionTime(new Date(instant), lookupLongitude(city ?? ""));
+  return shiZhiOf(hour);
 }
 
 const EMPTY_BIRTH: BirthForm = { date: "", time: "", gender: "", city: "" };
@@ -145,6 +142,8 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [showBirth, setShowBirth] = useState(false);
   const [birth, setBirth] = useState<BirthForm>(EMPTY_BIRTH);
+  // 问事地点：空则沿用出生地；都为空则按北京时间起课
+  const [askCity, setAskCity] = useState("");
   const [chart, setChart] = useState<ChartData | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   // 是否贴底跟随：流式输出时只有用户本就在底部才自动滚动，否则把滚轮还给用户
@@ -174,6 +173,8 @@ export default function Home() {
         localStorage.setItem(SESSION_STORAGE_KEY, sid);
       }
       sessionIdRef.current = sid;
+      const savedAskCity = localStorage.getItem(ASK_CITY_STORAGE_KEY);
+      if (savedAskCity) setAskCity(savedAskCity);
     } catch {
       // 本地数据损坏或隐私模式则忽略
     }
@@ -190,6 +191,18 @@ export default function Home() {
       // 隐私模式等场景下静默失败
     }
   }, [birth]);
+
+  useEffect(() => {
+    try {
+      if (askCity.trim()) {
+        localStorage.setItem(ASK_CITY_STORAGE_KEY, askCity);
+      } else {
+        localStorage.removeItem(ASK_CITY_STORAGE_KEY);
+      }
+    } catch {
+      // 隐私模式等场景下静默失败
+    }
+  }, [askCity]);
 
   useEffect(() => {
     // 贴底时才跟随滚动；用瞬时滚动，避免平滑动画在流式输出期间被反复重启、卡住滚轮
@@ -214,20 +227,25 @@ export default function Home() {
     const q = question.trim();
     if (!q || loading) return;
 
+    // 本问使用的问事地点：新起课看输入框（默认出生地），追问沿用本课
+    const inputCity = (askCity.trim() || birth.city).trim() || undefined;
     // 一事一占：追问沿用本课；只有点「另起一课」才重新起课。
     let castAt: number;
     let castBaoShu: number | undefined;
+    let castCity: string | undefined;
     let recast = false;
 
     if (baoShu !== undefined) {
       // 报数活时：同一时辰另起新课，以善信所报之数为机
       castAt = Date.now();
       castBaoShu = baoShu;
+      castCity = inputCity;
       recast = true;
-      setActiveChart({ castAt, baoShu, shiZhi: currentShiZhi() });
+      setActiveChart({ castAt, baoShu, city: castCity, shiZhi: shiZhiAt(castAt, castCity) });
       setRecastArmed(false);
     } else if (recastArmed) {
-      const nowZhi = currentShiZhi();
+      const now = Date.now();
+      const nowZhi = shiZhiAt(now, inputCity);
       if (activeChart && activeChart.shiZhi === nowZhi) {
         // 同一时辰另起一课，依「初筮告，再三渎」之例先请善信报数
         setPendingAsk(q);
@@ -236,18 +254,21 @@ export default function Home() {
         return;
       }
       // 跨时辰另起一课：直接按新时辰正时起课
-      castAt = Date.now();
+      castAt = now;
+      castCity = inputCity;
       recast = true;
-      setActiveChart({ castAt, shiZhi: nowZhi });
+      setActiveChart({ castAt, city: castCity, shiZhi: nowZhi });
       setRecastArmed(false);
     } else if (activeChart) {
-      // 同一件事继续问：沿用本课的起课时刻与报数，盘面不重排
+      // 同一件事继续问：沿用本课的起课时刻、报数与问事地点，盘面不重排
       castAt = activeChart.castAt;
       castBaoShu = activeChart.baoShu;
+      castCity = activeChart.city;
     } else {
       // 第一问：按此刻正时起课
       castAt = Date.now();
-      setActiveChart({ castAt, shiZhi: currentShiZhi() });
+      castCity = inputCity;
+      setActiveChart({ castAt, city: castCity, shiZhi: shiZhiAt(castAt, castCity) });
     }
 
     setError(null);
@@ -268,6 +289,7 @@ export default function Home() {
           castAt: new Date(castAt).toISOString(),
           baoShu: castBaoShu,
           recase: recast,
+          askCity: castCity,
           birth: birth.date
             ? {
                 date: birth.date,
@@ -372,6 +394,16 @@ export default function Home() {
 
   const fieldClass =
     "rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-800 outline-none transition-colors focus:border-teal-600 focus:ring-2 focus:ring-teal-600/15";
+
+  // 本课实际使用的问事地点与真太阳时读数（用于底部徽标）
+  const activeTime = activeChart
+    ? questionTime(new Date(activeChart.castAt), lookupLongitude(activeChart.city ?? ""))
+    : null;
+  const activeBasis = activeTime?.corrected
+    ? `${activeChart?.city ?? ""}真太阳时`
+    : "北京时间";
+  // 下一课将使用的问事地点（输入优先，其次出生地）
+  const nextCity = (askCity.trim() || birth.city).trim();
 
   return (
     <div className="flex flex-col flex-1 min-h-screen">
@@ -486,9 +518,9 @@ export default function Home() {
                   {birthSummary}
                 </span>
               )}
-              {activeChart && (
+              {activeChart && activeTime && (
                 <span className="rounded-full bg-stone-200/70 px-2.5 py-0.5 text-xs text-stone-500">
-                  本课 {formatClock(activeChart.castAt)}
+                  本课 {clockOf(activeTime)}（{activeBasis}）
                   {activeChart.baoShu ? ` · 报数${activeChart.baoShu}` : " · 正时"}
                 </span>
               )}
@@ -550,6 +582,33 @@ export default function Home() {
                 </button>
               </div>
             )}
+
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className="text-xs text-stone-400">问事地点</span>
+              <input
+                type="text"
+                list="ask-cities"
+                value={askCity}
+                onChange={(e) => setAskCity(e.target.value)}
+                placeholder={birth.city ? `默认：${birth.city}` : "填城市按真太阳时"}
+                className={`${fieldClass} w-40`}
+              />
+              <datalist id="ask-cities">
+                {Object.keys(CITY_LONGITUDES).map((name) => (
+                  <option key={name} value={name} />
+                ))}
+              </datalist>
+              <span className="text-xs text-stone-300">
+                留空沿用出生地；未收录城市按北京时间
+              </span>
+            </div>
+            {(!activeChart || recastArmed) &&
+              nextCity &&
+              lookupLongitude(nextCity) === null && (
+                <p className="mb-2 text-xs leading-5 text-amber-600">
+                  「{nextCity}」未收录经度，下一课按北京时间起课（未校正真太阳时）。
+                </p>
+              )}
 
             {recastArmed && !pendingAsk && (
               <p className="mb-2 text-xs leading-5 text-teal-800/80">
