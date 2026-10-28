@@ -18,6 +18,16 @@ interface BirthForm {
   city: string;
 }
 
+/** 本课：同一件事的追问沿用同一次起课，盘面才不会变 */
+interface ActiveChart {
+  /** 起课时刻（毫秒时间戳） */
+  castAt: number;
+  /** 报数活时：追问时须原样带回，才能复现同一张盘 */
+  baoShu?: number;
+  /** 起课时的钟表时辰，用于判断「另起一课」是否需要报数 */
+  shiZhi: string;
+}
+
 const SUGGESTIONS = [
   "请师傅看看我今年的运势如何",
   "我近来想换工作，此事可成否？",
@@ -34,6 +44,12 @@ const SHI_CHEN = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申",
 function currentShiZhi(): string {
   const h = new Date().getHours();
   return SHI_CHEN[h === 23 ? 0 : Math.floor((h + 1) / 2) % 12];
+}
+
+/** 起课时刻显示为 HH:mm（本机时钟） */
+function formatClock(ts: number): string {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 const EMPTY_BIRTH: BirthForm = { date: "", time: "", gender: "", city: "" };
@@ -135,8 +151,10 @@ export default function Home() {
   const stickToBottomRef = useRef(true);
   // 浏览器会话 id：未提供生辰时的身份标识，用于问答记录按人聚合
   const sessionIdRef = useRef<string>("");
-  // 本 session 最近一次正时起课的钟表时辰；同一时辰再问须报数以活时起课
-  const zhengShiZhiRef = useRef<string | null>(null);
+  // 本课：同一件事的追问沿用同一次起课，盘面不随请求漂移（一事一占）
+  const [activeChart, setActiveChart] = useState<ActiveChart | null>(null);
+  // 善信是否已点「另起一课」：下一问重新起课
+  const [recastArmed, setRecastArmed] = useState(false);
   const [pendingAsk, setPendingAsk] = useState<string | null>(null);
   const [baoShuInput, setBaoShuInput] = useState("");
 
@@ -148,7 +166,6 @@ export default function Home() {
         const parsed = JSON.parse(saved) as Partial<BirthForm>;
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setBirth({ ...EMPTY_BIRTH, ...parsed });
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         setShowBirth(true);
       }
       let sid = localStorage.getItem(SESSION_STORAGE_KEY);
@@ -197,16 +214,40 @@ export default function Home() {
     const q = question.trim();
     if (!q || loading) return;
 
-    // 同一时辰再问：依「初筮告，再三渎」之例，请善信报数，以活时起课
-    if (baoShu === undefined) {
+    // 一事一占：追问沿用本课；只有点「另起一课」才重新起课。
+    let castAt: number;
+    let castBaoShu: number | undefined;
+    let recast = false;
+
+    if (baoShu !== undefined) {
+      // 报数活时：同一时辰另起新课，以善信所报之数为机
+      castAt = Date.now();
+      castBaoShu = baoShu;
+      recast = true;
+      setActiveChart({ castAt, baoShu, shiZhi: currentShiZhi() });
+      setRecastArmed(false);
+    } else if (recastArmed) {
       const nowZhi = currentShiZhi();
-      if (zhengShiZhiRef.current === nowZhi) {
+      if (activeChart && activeChart.shiZhi === nowZhi) {
+        // 同一时辰另起一课，依「初筮告，再三渎」之例先请善信报数
         setPendingAsk(q);
         setInput("");
         setError(null);
         return;
       }
-      zhengShiZhiRef.current = nowZhi;
+      // 跨时辰另起一课：直接按新时辰正时起课
+      castAt = Date.now();
+      recast = true;
+      setActiveChart({ castAt, shiZhi: nowZhi });
+      setRecastArmed(false);
+    } else if (activeChart) {
+      // 同一件事继续问：沿用本课的起课时刻与报数，盘面不重排
+      castAt = activeChart.castAt;
+      castBaoShu = activeChart.baoShu;
+    } else {
+      // 第一问：按此刻正时起课
+      castAt = Date.now();
+      setActiveChart({ castAt, shiZhi: currentShiZhi() });
     }
 
     setError(null);
@@ -224,7 +265,9 @@ export default function Home() {
         body: JSON.stringify({
           messages: next,
           sessionId: sessionIdRef.current || undefined,
-          baoShu,
+          castAt: new Date(castAt).toISOString(),
+          baoShu: castBaoShu,
+          recase: recast,
           birth: birth.date
             ? {
                 date: birth.date,
@@ -426,7 +469,7 @@ export default function Home() {
         <div className="mx-auto flex w-full max-w-6xl gap-8 px-4 py-4">
           <div className="min-w-0 flex-1">
             {/* 生辰面板 */}
-            <div className="mb-2 flex items-center gap-2">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
               <button
                 onClick={() => setShowBirth(!showBirth)}
                 className="flex items-center gap-1.5 text-xs text-stone-400 transition-colors hover:text-teal-700"
@@ -442,6 +485,23 @@ export default function Home() {
                 <span className="rounded-full bg-teal-800/8 px-2.5 py-0.5 text-xs text-teal-800">
                   {birthSummary}
                 </span>
+              )}
+              {activeChart && (
+                <span className="rounded-full bg-stone-200/70 px-2.5 py-0.5 text-xs text-stone-500">
+                  本课 {formatClock(activeChart.castAt)}
+                  {activeChart.baoShu ? ` · 报数${activeChart.baoShu}` : " · 正时"}
+                </span>
+              )}
+              {activeChart && !pendingAsk && (
+                <button
+                  onClick={() => setRecastArmed((v) => !v)}
+                  disabled={loading}
+                  className={`text-xs transition-colors disabled:opacity-40 ${
+                    recastArmed ? "text-teal-800" : "text-stone-400 hover:text-teal-700"
+                  }`}
+                >
+                  {recastArmed ? "取消另起一课" : "另起一课"}
+                </button>
               )}
             </div>
             {showBirth && (
@@ -491,10 +551,16 @@ export default function Home() {
               </div>
             )}
 
+            {recastArmed && !pendingAsk && (
+              <p className="mb-2 text-xs leading-5 text-teal-800/80">
+                下一问将另起一课：同一时辰需先报数，跨时辰则按新时辰正时起课。
+              </p>
+            )}
+
             {pendingAsk && (
               <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-teal-700/30 bg-teal-800/5 p-3 shadow-sm">
                 <span className="w-full text-xs leading-5 text-stone-600">
-                  此时辰已起过一课。同一时辰再问，依「初筮告，再三渎」之例不复用正时——请善信随意报一数（1–12），道长以此活时为「{pendingAsk.length > 20 ? pendingAsk.slice(0, 20) + "…" : pendingAsk}」再起一盘。
+                  另起一课：此时辰已起过一课，依「初筮告，再三渎」之例不复用正时——请善信随意报一数（1–12），道长以此活时为「{pendingAsk.length > 20 ? pendingAsk.slice(0, 20) + "…" : pendingAsk}」再起一盘。若仍问同一件事，取消即可，继续用上一课。
                 </span>
                 <input
                   type="number"
@@ -521,8 +587,10 @@ export default function Home() {
                 </button>
                 <button
                   onClick={() => {
+                    if (pendingAsk) setInput(pendingAsk);
                     setPendingAsk(null);
                     setBaoShuInput("");
+                    setRecastArmed(false);
                   }}
                   className="text-xs text-stone-400 transition-colors hover:text-red-500"
                 >

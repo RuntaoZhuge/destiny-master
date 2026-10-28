@@ -26,6 +26,20 @@ function sanitizeBirth(raw: unknown): BirthInfo | null {
   return birth;
 }
 
+/** 起课时刻：同一件事的追问沿用首次起课的时刻，盘面才不会随请求漂移。
+ *  只接受合理范围内的 ISO 时间，异常值回退到此刻。 */
+function parseCastAt(raw: unknown): Date {
+  const now = Date.now();
+  if (typeof raw === "string") {
+    const t = Date.parse(raw);
+    // 可沿用数日内的旧课；容忍客户端时钟略有超前，但不接受离谱的未来时刻
+    if (Number.isFinite(t) && t <= now + 24 * 60 * 60 * 1000 && t >= now - 7 * 24 * 60 * 60 * 1000) {
+      return new Date(t);
+    }
+  }
+  return new Date(now);
+}
+
 export async function POST(req: NextRequest) {
   const apiKey = process.env.LLM_API_KEY;
   if (!apiKey) {
@@ -35,7 +49,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let body: { messages?: ChatMessage[]; birth?: unknown; sessionId?: unknown; baoShu?: unknown };
+  let body: {
+    messages?: ChatMessage[];
+    birth?: unknown;
+    sessionId?: unknown;
+    baoShu?: unknown;
+    castAt?: unknown;
+    recase?: unknown;
+  };
   try {
     body = await req.json();
   } catch {
@@ -64,11 +85,14 @@ export async function POST(req: NextRequest) {
     typeof body.baoShu === "number" && Number.isInteger(body.baoShu) && body.baoShu >= 1 && body.baoShu <= 999
       ? body.baoShu
       : undefined;
-  // 排盘以「此刻问事时间」起卦，八字以用户提交的生辰排；有报数则以活时起课
-  const divination = computeDivination(birth, new Date(), baoShu);
+  // 起课：默认沿用前端传来的「本课」时刻；只有明确另起一课才换新时刻。
+  // 「一事一占」——同一件事多轮追问始终读同一张盘，避免盘面变了而模型自认算错。
+  const castAt = parseCastAt(body.castAt);
+  const recast = body.recase === true;
+  const divination = computeDivination(birth, castAt, baoShu);
   // 涉及时势的问题联网打探（需配置 TAVILY_API_KEY，未配置自动跳过）
   const currentAffairs = await searchCurrentAffairs(messages[messages.length - 1].content);
-  const systemPrompt = buildSystemPrompt(divination, currentAffairs);
+  const systemPrompt = buildSystemPrompt(divination, currentAffairs, recast);
 
   const baseUrl = (process.env.LLM_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
   const model = process.env.LLM_MODEL ?? "gpt-4o-mini";
