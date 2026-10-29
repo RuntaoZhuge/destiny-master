@@ -46,6 +46,10 @@ npm run dev
 
 写入逻辑在 `src/lib/log.ts`（纯 fetch 调 PostgREST，无额外依赖），通过 Next 的 `after()` 在响应结束后落库，不拖慢回答。
 
+### 查看问答记录
+
+配置 `RECORDS_PASSWORD`（可选 `RECORDS_USER`，默认 `admin`）后，访问 `/records`，浏览器会要求 HTTP Basic Auth 登录。页面按人展示 `conversations.messages`：问题、断语、思考链与时间，默认取最近 20 位。未配置密码时返回 503，不会默认公开。页面在服务端用 service_role 读取，数据不进客户端接口；`/records` 由 `src/proxy.ts` 保护。
+
 ## 结构
 
 ```
