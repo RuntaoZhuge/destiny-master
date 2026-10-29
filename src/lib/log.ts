@@ -146,6 +146,7 @@ async function writeReading(r: ReadingRecord, id: string): Promise<LogResult> {
         );
         return { ok: false, status: created.status, error: detail.slice(0, 300) };
       }
+      console.info(`[log] 新建会话 ${id}`);
       return { ok: true, status: created.status };
     }
 
@@ -170,6 +171,7 @@ async function writeReading(r: ReadingRecord, id: string): Promise<LogResult> {
       );
       return { ok: false, status: updated.status, error: detail.slice(0, 300) };
     }
+    console.info(`[log] 追加会话 ${id}（${messages.length} 条）`);
     return { ok: true, status: updated.status };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
