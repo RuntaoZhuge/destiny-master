@@ -220,8 +220,8 @@ export async function POST(req: NextRequest) {
 
   // 响应结束后记录问答（after 不阻塞流；未配置 Supabase 则静默跳过）
   const question = messages[messages.length - 1].content;
-  after(() =>
-    logReading({
+  after(async () => {
+    await logReading({
       question,
       reply: fullReply,
       reasoning: fullReasoning || undefined,
@@ -229,8 +229,8 @@ export async function POST(req: NextRequest) {
       sessionId,
       model,
       durationMs: Date.now() - startedAt,
-    })
-  );
+    });
+  });
 
   return new Response(stream, {
     headers: {
